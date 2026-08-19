@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>PlayMarket — Продавец (Касса)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Онлайн синхронизация MQTT -->
+  <script src="https://unpkg.com/mqtt@4.3.7/dist/mqtt.min.js"></script>
+  <!-- Сканер QR через камеру -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
+    .toast-enter { transform: translateY(100%); opacity: 0; }
+    .toast-show { transform: translateY(0); opacity: 1; }
+    #reader video { object-fit: cover !important; border-radius: 1rem; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-3 sm:p-6 pb-20">
+
+  <div class="max-w-5xl mx-auto space-y-5">
+    
+    <!-- Шапка Продавца -->
+    <header class="bg-slate-900/90 backdrop-blur-md p-4 rounded-3xl border border-slate-800 flex flex-wrap justify-between items-center gap-3 shadow-2xl">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 sm:w-12 sm:h-12 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex items-center justify-center text-xl sm:text-2xl shadow-inner">
+          📦
+        </div>
+        <div>
+          <h1 class="text-lg sm:text-xl font-black text-white tracking-tight">PlayMarket <span class="text-emerald-400">Seller</span></h1>
+          <div class="flex items-center gap-1.5 text-[11px] text-slate-400 font-bold">
+            <span>🌐 Сеть:</span>
+            <input type="text" id="room-input" value="market71" onchange="changeRoom()" class="bg-slate-950 border border-slate-800 text-emerald-400 font-black px-2 py-0.5 rounded-lg w-24 text-center outline-none focus:border-emerald-400">
+            <span id="sync-status" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" title="Подключение..."></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-slate-950/80 px-4 py-2 rounded-2xl border border-slate-800 text-right">
+        <p class="text-[9px] uppercase tracking-wider text-slate-400 font-bold">Заказов в базе</p>
+        <p class="text-lg font-black text-amber-400 leading-none" id="total-orders-count">0</p>
+      </div>
+    </header>
+
+    <!-- Секция Сканирования и Ввода Кода -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      
+      <!-- 📷 QR Сканер -->
+      <div class="bg-slate-900/90 p-4 sm:p-5 rounded-3xl border border-slate-800 space-y-3 shadow-xl">
+        <h2 class="text-sm font-extrabold text-slate-300 flex items-center gap-2">
+          <span>📷</span> Сканер QR-Кода
+        </h2>
+        <div id="reader" class="w-full h-48 bg-slate-950 rounded-2xl overflow-hidden border border-slate-800 flex items-center justify-center relative">
+          <p class="text-xs text-slate-500 font-medium text-center p-4">Нажмите кнопку ниже, чтобы включить камеру</p>
+        </div>
+        <button onclick="toggleScanner()" id="scanner-btn" class="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black py-3 rounded-2xl shadow-lg shadow-emerald-500/20 text-xs transition active:scale-95">
+          Включить Камеру
+        </button>
+      </div>
+
+      <!-- 🔑 Ручной Ввод 5-значного Кода -->
+      <div class="bg-slate-900/90 p-4 sm:p-5 rounded-3xl border border-slate-800 space-y-4 shadow-xl flex flex-col justify-between">
+        <div>
+          <h2 class="text-sm font-extrabold text-slate-300 flex items-center gap-2 mb-3">
+            <span>🔑</span> Поиск по 5-значному коду
+          </h2>
+          <p class="text-xs text-slate-400 mb-3">Введите код, который покупатель видит у себя на экране:</p>
+          
+          <input type="number" id="manual-code-input" placeholder="Например: 48291" class="w-full p-3.5 bg-slate-950 border border-slate-800 rounded-2xl text-xl font-black text-amber-400 text-center tracking-widest outline-none focus:border-emerald-400 transition mb-3">
+        </div>
+
+        <button onclick="searchByCode()" class="w-full bg-amber-400 hover:bg-amber-300 text-slate-950 font-black py-3.5 rounded-2xl shadow-lg shadow-amber-400/20 text-xs transition active:scale-95">
+          Найти Заказ
+        </button>
+      </div>
+
+    </div>
+
+    <!-- Список Поступивших Заказов -->
+    <main class="bg-slate-900/90 p-5 rounded-3xl border border-slate-800 shadow-xl space-y-4">
+      <div class="flex justify-between items-center border-b border-slate-800 pb-3">
+        <h2 class="text-base font-black text-slate-100 flex items-center gap-2">
+          <span>📋</span> Заказы Покупателей (Онлайн)
+        </h2>
+        <button onclick="clearCompleted()" class="text-xs font-bold text-slate-400 hover:text-red-400 transition">
+          Очистить завершенные
+        </button>
+      </div>
+
+      <div id="seller-orders-list" class="space-y-3"></div>
+    </main>
+
+  </div>
+
+  <!-- Всплывающий Тост -->
+  <div id="toast-container" class="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 transition-all duration-300 pointer-events-none toast-enter w-11/12 max-w-md">
+    <div id="toast-body" class="bg-slate-900 border border-emerald-400/50 text-white p-4 rounded-2xl shadow-2xl flex items-center gap-3 backdrop-blur-md">
+      <span id="toast-icon" class="text-xl">🔔</span>
+      <p id="toast-msg" class="text-xs sm:text-sm font-bold leading-tight"></p>
+    </div>
+  </div>
+
+  <script>
+    let sellerOrders = JSON.parse(localStorage.getItem('pm_seller_orders')) || [];
+    let currentRoom = localStorage.getItem('pm_room') || 'market71';
+    let mqttClient = null;
+    let html5QrcodeScanner = null;
+    let isScanning = false;
+
+    document.getElementById('room-input').value = currentRoom;
+
+    function init() {
+      setupMQTT();
+      renderOrders();
+    }
+
+    function setupMQTT() {
+      const statusDot = document.getElementById('sync-status');
+      statusDot.className = "w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse";
+
+      if (mqttClient) mqttClient.end();
+
+      mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
+
+      mqttClient.on('connect', () => {
+        statusDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-400";
+        mqttClient.subscribe(`playmarket/${currentRoom}/new_order`);
+        mqttClient.subscribe(`playmarket/${currentRoom}/status_update`);
+      });
+
+      mqttClient.on('message', (topic, payload) => {
+        try {
+          const data = JSON.parse(payload.toString());
+
+          // Новый заказ от покупателя
+          if (topic.includes('new_order')) {
+            const exists = sellerOrders.some(o => o.id === data.id);
+            if (!exists) {
+              sellerOrders.unshift(data);
+              saveAndRender();
+              showToast(`📦 Поступил новый заказ ${data.id}! Код: ${data.code}`, 'success');
+            }
+          }
+
+          // Покупатель отменил заказ
+          if (topic.includes('status_update')) {
+            const ord = sellerOrders.find(o => o.id === data.orderId);
+            if (ord && ord.status !== data.status) {
+              ord.status = data.status;
+              saveAndRender();
+              showToast(`ℹ️ Заказ ${data.orderId} получил статус: ${data.status}`, 'info');
+            }
+          }
+        } catch (e) {}
+      });
+    }
+
+    function changeRoom() {
+      currentRoom = document.getElementById('room-input').value.trim() || 'market71';
+      localStorage.setItem('pm_room', currentRoom);
+      setupMQTT();
+      showToast(`🌐 Подключено к сети: ${currentRoom}`, 'info');
+    }
+
+    function saveAndRender() {
+      localStorage.setItem('pm_seller_orders', JSON.stringify(sellerOrders));
+      renderOrders();
+    }
+
+    function renderOrders() {
+      document.getElementById('total-orders-count').innerText = sellerOrders.length;
+      const container = document.getElementById('seller-orders-list');
+
+      if (sellerOrders.length === 0) {
+        container.innerHTML = '<p class="text-slate-500 text-sm text-center py-8">Ожидаем заказов от покупателей...</p>';
+        return;
+      }
+
+      container.innerHTML = sellerOrders.map(o => `
+        <div id="order-card-${o.code}" class="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3 transition">
+          <div class="flex flex-wrap justify-between items-center gap-2 border-b border-slate-800/80 pb-2">
+            <div class="flex items-center gap-2">
+              <span class="font-black text-amber-400 text-base">${o.id}</span>
+              <span class="text-slate-500 text-xs">${o.date}</span>
+            </div>
+            <span class="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${getStatusBadgeClass(o.status)}">
+              ${o.status}
+            </span>
+          </div>
+
+          <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+            <div>
+              <p class="text-xs text-slate-300">Состав: <b>${o.items.map(i => i.name).join(', ')}</b></p>
+              <p class="text-xs text-slate-400 mt-1">Сумма: <b class="text-emerald-400">${o.total} $</b></p>
+              <div class="mt-2 inline-flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1 rounded-xl">
+                <span class="text-xs text-slate-400">Код:</span>
+                <span class="font-black text-amber-400 text-lg tracking-widest">${o.code}</span>
+              </div>
+            </div>
+
+            <!-- Кнопки управления статусом -->
+            <div class="flex flex-wrap gap-1.5 w-full sm:w-auto">
+              <button onclick="updateOrderStatus('${o.id}', 'Прибыл')" class="bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30 font-bold px-2.5 py-1.5 rounded-xl text-xs transition">
+                Прибыл
+              </button>
+              <button onclick="updateOrderStatus('${o.id}', 'Выдан')" class="bg-purple-500/20 text-purple-400 border border-purple-500/30 hover:bg-purple-500/30 font-bold px-2.5 py-1.5 rounded-xl text-xs transition">
+                Выдан
+              </button>
+              <button onclick="updateOrderStatus('${o.id}', 'Поврежден')" class="bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30 font-bold px-2.5 py-1.5 rounded-xl text-xs transition">
+                Брак
+              </button>
+            </div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function updateOrderStatus(orderId, newStatus) {
+      const ord = sellerOrders.find(o => o.id === orderId);
+      if (ord) {
+        ord.status = newStatus;
+        saveAndRender();
+
+        if (mqttClient && mqttClient.connected) {
+          mqttClient.publish(`playmarket/${currentRoom}/status_update`, JSON.stringify({ orderId: orderId, status: newStatus }));
+        }
+
+        showToast(`Статус заказа ${orderId} изменен на "${newStatus}"`, 'success');
+      }
+    }
+
+    function searchByCode() {
+      const code = document.getElementById('manual-code-input').value.trim();
+      if (!code) return showToast('⚠️ Введите код!', 'error');
+
+      const ord = sellerOrders.find(o => o.code === code);
+      if (ord) {
+        showToast(`✅ Заказ найден! ${ord.id} на сумму ${ord.total} $`, 'success');
+        const card = document.getElementById(`order-card-${code}`);
+        if (card) {
+          card.scrollIntoView({ behavior: 'smooth' });
+          card.classList.add('ring-2', 'ring-amber-400');
+          setTimeout(() => card.classList.remove('ring-2', 'ring-amber-400'), 3000);
+        }
+      } else {
+        showToast(`❌ Заказ с кодом "${code}" не найден в этой комнате!`, 'error');
+      }
+    }
+
+    function toggleScanner() {
+      const btn = document.getElementById('scanner-btn');
+      if (!isScanning) {
+        html5QrcodeScanner = new Html5Qrcode("reader");
+        html5QrcodeScanner.start(
+          { facingMode: "environment" },
+          { fps: 10, qrbox: { width: 200, height: 200 } },
+          (decodedText) => {
+            document.getElementById('manual-code-input').value = decodedText;
+            searchByCode();
+            toggleScanner(); // Отключаем после сканирования
+          },
+          () => {}
+        ).then(() => {
+          isScanning = true;
+          btn.innerText = "Выключить Камеру";
+          btn.className = "w-full bg-red-500 hover:bg-red-400 text-white font-black py-3 rounded-2xl shadow-lg text-xs transition";
+        }).catch(err => {
+          showToast('⚠️ Ошибка доступа к камере', 'error');
+        });
+      } else {
+        if (html5QrcodeScanner) {
+          html5QrcodeScanner.stop().then(() => {
+            isScanning = false;
+            btn.innerText = "Включить Камеру";
+            btn.className = "w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black py-3 rounded-2xl shadow-lg text-xs transition";
+          });
+        }
+      }
+    }
+
+    function clearCompleted() {
+      sellerOrders = sellerOrders.filter(o => o.status !== 'Выдан' && o.status !== 'Отменен');
+      saveAndRender();
+      showToast('🧹 Выполненные заказы очищены', 'info');
+    }
+
+    function getStatusBadgeClass(status) {
+      switch (status) {
+        case 'В пути': return 'bg-blue-500/20 border border-blue-500/30 text-blue-400';
+        case 'Прибыл': return 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-400';
+        case 'Выдан': return 'bg-purple-500/20 border border-purple-500/30 text-purple-400';
+        case 'Поврежден': return 'bg-amber-500/20 border border-amber-500/30 text-amber-400';
+        case 'Отменен': return 'bg-red-500/20 border border-red-500/30 text-red-400';
+        default: return 'bg-slate-800 text-slate-400';
+      }
+    }
+
+    function showToast(msg, type = 'info') {
+      const container = document.getElementById('toast-container');
+      const msgEl = document.getElementById('toast-msg');
+      const iconEl = document.getElementById('toast-icon');
+
+      msgEl.innerText = msg;
+      iconEl.innerText = type === 'success' ? '🎉' : type === 'error' ? '⚠️' : '🔔';
+
+      container.classList.remove('toast-enter');
+      container.classList.add('toast-show');
+
+      setTimeout(() => {
+        container.classList.remove('toast-show');
+        container.classList.add('toast-enter');
+      }, 3200);
+    }
+
+    init();
+  </script>
+</body>
+</html>
